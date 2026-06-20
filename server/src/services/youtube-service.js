@@ -1,0 +1,566 @@
+import { Innertube, Parser, Platform, UniversalCache, YTNodes } from 'youtubei.js';
+
+import {
+  normalizeMediaNode,
+  normalizeSearch,
+  normalizeSection,
+  normalizeTrackInfo,
+} from './media-normalizer.js';
+
+Platform.shim.eval = (data, env) => {
+  const properties = [];
+  if (env.n) properties.push(`n: exportedVars.nFunction("${env.n}")`);
+  if (env.sig) properties.push(`sig: exportedVars.sigFunction("${env.sig}")`);
+  const code = `${data.output}\nreturn { ${properties.join(', ')} }`;
+  // youtubei.js requires a host-provided evaluator for player signature functions.
+  return new Function(code)();
+};
+
+export class YouTubeMusicService {
+  #configStore;
+  #sessionStore;
+  #clientPromise;
+  #playbackClientPromise;
+  #streamCache = new Map();
+  #streamInflight = new Map();
+
+  constructor({ configStore, sessionStore }) {
+    this.#configStore = configStore;
+    this.#sessionStore = sessionStore;
+  }
+
+  authStatus() {
+    const session = this.#sessionStore.get();
+    return {
+      mode: 'external-browser-cookie',
+      status: session.cookie ? 'configured' : 'not_configured',
+      hasCookie: Boolean(session.cookie),
+      hasOAuthToken: false,
+      hasPoToken: Boolean(session.poToken),
+      hasVisitorData: Boolean(session.visitorData),
+      musicLibraryStatus: session.cookie ? 'configured' : 'cookie_required',
+      error: null,
+      updatedAt: session.updatedAt,
+    };
+  }
+
+  async setCredentials({ cookie, poToken, visitorData }) {
+    const next = await this.#sessionStore.patch({
+      cookie: normalizeCookie(cookie),
+      poToken: poToken ?? '',
+      visitorData: visitorData ?? '',
+      updatedAt: new Date().toISOString(),
+    });
+    this.#clientPromise = null;
+    this.#playbackClientPromise = null;
+    this.#streamCache.clear();
+    this.#streamInflight.clear();
+    return {
+      hasCookie: Boolean(next.cookie),
+      hasPoToken: Boolean(next.poToken),
+      hasVisitorData: Boolean(next.visitorData),
+      updatedAt: next.updatedAt,
+    };
+  }
+
+  async clearCredentials() {
+    await this.#sessionStore.clear();
+    this.#clientPromise = null;
+    this.#playbackClientPromise = null;
+    this.#streamCache.clear();
+    this.#streamInflight.clear();
+  }
+
+  async search(query, filters = {}) {
+    const client = await this.#client();
+    const result = await client.music.search(query, filters);
+    return normalizeSearch(result);
+  }
+
+  async suggestions(query) {
+    const client = await this.#client();
+    const sections = await client.music.getSearchSuggestions(query);
+    return Array.from(sections ?? []).flatMap((section) =>
+      Array.from(section.contents ?? []).map((item) => item?.suggestion?.toString?.()).filter(Boolean),
+    );
+  }
+
+  async home() {
+    const client = await this.#client();
+    const home = await client.music.getHomeFeed();
+    return {
+      filters: home.filters ?? [],
+      sections: Array.from(home.sections ?? []).map(normalizeSection),
+    };
+  }
+
+  async explore() {
+    const client = await this.#client();
+    const explore = await client.music.getExplore();
+    return {
+      topButtons: Array.from(explore.top_buttons ?? []).map((button) => ({
+        title: button.title?.toString?.() ?? '',
+        browseId: button.endpoint?.payload?.browseEndpoint?.browseId ?? null,
+      })),
+      sections: Array.from(explore.sections ?? []).map(normalizeSection),
+    };
+  }
+
+  async library() {
+    const client = await this.#client();
+    if (!this.#sessionStore.get().cookie) {
+      return authRequiredSections(
+        'cookie_required',
+        'YouTube Music Library requires browser cookie login. Device-code OAuth is not accepted by this Library endpoint.',
+      );
+    }
+    try {
+      const library = await client.music.getLibrary();
+      return {
+        filters: library.filters ?? [],
+        sortOptions: library.sort_options ?? [],
+        sections: Array.from(library.contents ?? []).map(normalizeSection),
+      };
+    } catch (error) {
+      if (isAuthRequiredError(error)) {
+        return authRequiredSections(
+          'cookie_required',
+          'YouTube Music Library requires browser cookie login.',
+        );
+      }
+      throw error;
+    }
+  }
+
+  async browse(media) {
+    const id = media?.playlistId ?? media?.browseId ?? media?.id;
+    if (!id) {
+      return emptyBrowseResult('not_browsable', 'This item cannot be opened.');
+    }
+
+    const client = await this.#client();
+    if (isAlbumId(id)) {
+      const album = await client.music.getAlbum(id);
+      return {
+        id,
+        title: album.header?.title?.toString?.() ?? media?.title ?? 'Album',
+        sections: [
+          {
+            id: 'tracks',
+            title: 'Tracks',
+            items: Array.from(album.contents ?? []).map((item) => normalizeMediaNode(item)).filter(Boolean),
+          },
+          ...Array.from(album.sections ?? []).map(normalizeSection),
+        ],
+      };
+    }
+
+    if (isPlaylistId(id)) {
+      const playlist = await client.music.getPlaylist(id);
+      return {
+        id,
+        title: playlist.header?.title?.toString?.() ?? media?.title ?? 'Playlist',
+        sections: [
+          {
+            id: 'tracks',
+            title: 'Tracks',
+            items: Array.from(playlist.items ?? []).map((item) => normalizeMediaNode(item)).filter(Boolean),
+          },
+        ],
+      };
+    }
+
+    if (isArtistId(id)) {
+      const artist = await client.music.getArtist(id);
+      return {
+        id,
+        title: artist.header?.title?.toString?.() ?? media?.title ?? 'Artist',
+        sections: Array.from(artist.sections ?? []).map(normalizeSection),
+      };
+    }
+
+    if (String(id).startsWith('FEmusic')) {
+      return await this.#browseMusicEndpoint(id, media);
+    }
+
+    return emptyBrowseResult(
+      'not_browsable',
+      'This item is not directly browsable yet. Try a song, album, playlist, or artist.',
+    );
+  }
+
+  async playlist(playlistId) {
+    const client = await this.#client();
+    const playlist = await client.music.getPlaylist(playlistId);
+    return {
+      id: playlistId,
+      title: playlist.header?.title?.toString?.() ?? playlistId,
+      items: Array.from(playlist.items ?? []).map((item) => normalizeMediaNode(item)).filter(Boolean),
+    };
+  }
+
+  async track(videoId) {
+    const info = await this.#playbackInfo(videoId);
+    return normalizeTrackInfo(info);
+  }
+
+  async related(videoId) {
+    const client = await this.#client();
+    const related = await client.music.getRelated(videoId);
+    return {
+      sections: Array.from(related?.contents ?? related ?? []).map(normalizeSection),
+    };
+  }
+
+  async resolveStream(media, options = {}) {
+    const videoId = streamVideoId(media);
+    if (!videoId) {
+      throw notPlayable('This item has no videoId. Select a song or video item.');
+    }
+
+    const cacheKey = streamCacheKey(videoId, options);
+    const cached = this.#cachedStream(cacheKey);
+    if (cached) {
+      return cached.value;
+    }
+
+    const inflight = this.#streamInflight.get(cacheKey);
+    if (inflight) {
+      return await inflight;
+    }
+
+    const promise = this.#resolveStreamUncached(videoId, options, cacheKey);
+    this.#streamInflight.set(cacheKey, promise);
+    try {
+      return await promise;
+    } finally {
+      this.#streamInflight.delete(cacheKey);
+    }
+  }
+
+  prewarmStream(media, options = {}) {
+    const videoId = streamVideoId(media);
+    if (!videoId) return false;
+
+    const cacheKey = streamCacheKey(videoId, options);
+    if (this.#cachedStream(cacheKey) || this.#streamInflight.has(cacheKey)) {
+      return false;
+    }
+
+    this.resolveStream(media, options).catch((error) => {
+      console.warn(`stream prewarm failed for ${videoId}: ${error?.message ?? error}`);
+    });
+    return true;
+  }
+
+  invalidateStream(videoId, options = {}) {
+    if (!videoId) return false;
+    const cacheKey = streamCacheKey(videoId, options);
+    const deletedCache = this.#streamCache.delete(cacheKey);
+    const deletedInflight = this.#streamInflight.delete(cacheKey);
+    return deletedCache || deletedInflight;
+  }
+
+  async #resolveStreamUncached(videoId, options = {}, cacheKey = streamCacheKey(videoId, options)) {
+    const info = await this.#playbackInfo(videoId);
+    assertPlayable(info);
+
+    const selected = await this.#chooseTvOSFormat(info, options);
+    const directUrl = await this.#decipherFormat(selected);
+    const value = {
+      videoId,
+      directUrl,
+      mimeType: selected.mime_type,
+      contentLength: selected.content_length ?? null,
+      hasAudio: selected.has_audio,
+      hasVideo: selected.has_video,
+      quality: selected.quality_label ?? selected.quality ?? selected.audio_quality ?? null,
+      expiresAt: new Date(Date.now() + 45 * 60 * 1000).toISOString(),
+      media: normalizeTrackInfo(info),
+    };
+
+    this.#streamCache.set(cacheKey, {
+      value,
+      expiresAt: Date.now() + 40 * 60 * 1000,
+    });
+    return value;
+  }
+
+  #cachedStream(cacheKey) {
+    const cached = this.#streamCache.get(cacheKey);
+    if (!cached) return null;
+    if (cached.expiresAt <= Date.now()) {
+      this.#streamCache.delete(cacheKey);
+      return null;
+    }
+    return cached;
+  }
+
+  async stream(videoId, options = {}) {
+    const info = await this.#playbackInfo(videoId);
+    assertPlayable(info);
+    const downloadOptions = {
+      type: options.preferVideo ? 'video+audio' : 'audio',
+      quality: options.quality ?? 'best',
+      format: 'mp4',
+    };
+    return await info.download(downloadOptions);
+  }
+
+  async #playbackInfo(videoId) {
+    const playbackClient = await this.#playbackClient();
+    let fallbackInfo = null;
+    let fallbackError = null;
+    try {
+      const info = await playbackClient.music.getInfo(videoId);
+      if (isPlayable(info)) {
+        return info;
+      }
+      fallbackInfo = info;
+      console.warn(`music.getInfo returned ${info?.playability_status?.status ?? 'unknown'} for ${videoId}, falling back to getBasicInfo`);
+    } catch (error) {
+      fallbackError = error;
+      console.warn(`music.getInfo failed for ${videoId}, falling back to getBasicInfo: ${error?.message ?? error}`);
+    }
+
+    const client = await this.#client();
+    for (const clientName of ['ANDROID', 'WEB', 'IOS']) {
+      try {
+        const info = await client.getBasicInfo(videoId, { client: clientName });
+        if (isPlayable(info)) {
+          return info;
+        }
+        fallbackInfo = info;
+      } catch (error) {
+        fallbackError = error;
+      }
+    }
+
+    if (fallbackInfo) {
+      return fallbackInfo;
+    }
+    throw fallbackError ?? new Error(`Unable to retrieve playback info for ${videoId}`);
+  }
+
+  async #chooseTvOSFormat(info, options) {
+    const preferVideo = options.preferVideo !== false;
+    const quality = options.quality ?? 'best';
+    const compatibleFormat = tvOSCompatibleFormat(info, { preferVideo });
+    if (compatibleFormat) {
+      return compatibleFormat;
+    }
+    const attempts = preferVideo
+      ? [
+          { type: 'video+audio', quality, format: 'mp4' },
+          { type: 'video+audio', quality: 'bestefficiency', format: 'mp4' },
+          { type: 'audio', quality: 'best', format: 'mp4' },
+          { type: 'audio', quality: 'best', format: 'any' },
+        ]
+      : [
+          { type: 'audio', quality: 'best', format: 'mp4' },
+          { type: 'audio', quality: 'best', format: 'any' },
+          { type: 'video+audio', quality: 'bestefficiency', format: 'mp4' },
+        ];
+
+    let lastError;
+    for (const attempt of attempts) {
+      try {
+        return info.chooseFormat(attempt);
+      } catch (error) {
+        lastError = error;
+      }
+    }
+    throw lastError ?? new Error('No playable format found');
+  }
+
+  async #client() {
+    if (!this.#clientPromise) {
+      this.#clientPromise = this.#createClient({
+        retrievePlayer: false,
+      });
+    }
+    return await this.#clientPromise;
+  }
+
+  async #playbackClient() {
+    if (!this.#playbackClientPromise) {
+      this.#playbackClientPromise = this.#createClient({
+        retrievePlayer: true,
+        clientName: 'YTMUSIC',
+      });
+    }
+    return await this.#playbackClientPromise;
+  }
+
+  async #decipherFormat(format) {
+    const canUseDirectUrl = Boolean(format.url);
+    const needsPlayer = Boolean(format.signature_cipher || format.cipher || format.url?.includes('&n='));
+    if (!needsPlayer) {
+      return await format.decipher();
+    }
+
+    try {
+      const client = await this.#playbackClient();
+      return await format.decipher(client.session.player);
+    } catch (error) {
+      if (canUseDirectUrl) {
+        console.warn(`player decipher failed, using direct format URL: ${error?.message ?? error}`);
+        return await format.decipher();
+      }
+      throw error;
+    }
+  }
+
+  async #createClient({ retrievePlayer, clientName = null }) {
+    const config = this.#configStore.get();
+    const session = this.#sessionStore.get();
+
+    const client = await Innertube.create({
+      cache: new UniversalCache(false),
+      cookie: session.cookie || undefined,
+      po_token: session.poToken || config.youtube.poToken || undefined,
+      visitor_data: session.visitorData || config.youtube.visitorData || undefined,
+      account_index: config.youtube.accountIndex ?? 0,
+      user_agent: config.youtube.userAgent,
+      generate_session_locally: true,
+      retrieve_player: retrievePlayer,
+      ...(clientName ? { client_name: clientName } : {}),
+    });
+    return client;
+  }
+
+  async #browseMusicEndpoint(id, media) {
+    const client = await this.#client();
+    try {
+      const response = await client.actions.execute('/browse', {
+        browseId: id,
+        client: 'YTMUSIC',
+        skip_auth_check: true,
+      });
+      const parsed = Parser.parseResponse(response.data);
+      const sections = sectionsFromParsedResponse(parsed);
+      return {
+        id,
+        title: media?.title ?? id,
+        sections,
+      };
+    } catch (error) {
+      if (isAuthRequiredError(error)) {
+        return authRequiredSections(
+          'cookie_required',
+          'This library section requires browser cookie login.',
+        );
+      }
+      throw error;
+    }
+  }
+}
+
+const authRequiredSections = (reason = 'auth_required', message = 'Authentication is required.') => ({
+  authRequired: true,
+  reason,
+  message,
+  filters: [],
+  sortOptions: [],
+  sections: [],
+});
+
+const emptyBrowseResult = (reason, message) => ({
+  reason,
+  message,
+  sections: [],
+});
+
+const assertPlayable = (info) => {
+  if (isPlayable(info)) return;
+
+  const status = info?.playability_status;
+  const reason =
+    status.reason ??
+    status.error_screen?.reason?.text ??
+    status.error_screen?.subreason?.text ??
+    status.status;
+  throw notPlayable(`Video is not playable: ${reason}`);
+};
+
+const notPlayable = (message) => {
+  const error = new Error(message);
+  error.status = 422;
+  error.code = 'not_playable';
+  return error;
+};
+
+const isPlayable = (info) => {
+  const status = info?.playability_status;
+  return !status || status.status === 'OK';
+};
+
+const streamVideoId = (media) => media?.videoId ?? media?.id ?? null;
+
+const streamCacheKey = (videoId, options = {}) =>
+  `${videoId}:${options.preferVideo ?? true}:${options.quality ?? 'best'}`;
+
+const tvOSCompatibleFormat = (info, { preferVideo }) => {
+  const streamingData = info?.streaming_data;
+  const formats = [
+    ...Array.from(streamingData?.formats ?? []),
+    ...Array.from(streamingData?.adaptive_formats ?? []),
+  ];
+
+  const audioFormats = formats
+    .filter((format) => {
+      const mimeType = String(format?.mime_type ?? '').toLowerCase();
+      return format?.has_audio === true &&
+        format?.has_video !== true &&
+        mimeType.startsWith('audio/mp4') &&
+        mimeType.includes('mp4a');
+    })
+    .sort((left, right) => (right.bitrate ?? 0) - (left.bitrate ?? 0));
+
+  if (!preferVideo) {
+    return audioFormats[0] ?? null;
+  }
+
+  const videoFormats = formats
+    .filter((format) => {
+      const mimeType = String(format?.mime_type ?? '').toLowerCase();
+      return format?.has_audio === true &&
+        format?.has_video === true &&
+        mimeType.startsWith('video/mp4') &&
+        mimeType.includes('avc1') &&
+        mimeType.includes('mp4a');
+    })
+    .sort((left, right) =>
+      ((right.height ?? 0) - (left.height ?? 0)) ||
+      ((right.bitrate ?? 0) - (left.bitrate ?? 0))
+    );
+
+  return videoFormats[0] ?? audioFormats[0] ?? null;
+};
+
+const isAuthRequiredError = (error) =>
+  String(error?.message ?? error).toLowerCase().includes('signed in');
+
+const isAlbumId = (id) => String(id).startsWith('MPR');
+const isArtistId = (id) =>
+  String(id).startsWith('UC') || String(id).startsWith('FEmusic_library_privately_owned_artist');
+const isPlaylistId = (id) => {
+  const value = String(id);
+  return value.startsWith('VL') || value.startsWith('PL') || value.startsWith('RD');
+};
+
+const sectionsFromParsedResponse = (parsed) => {
+  const shelves = parsed.contents_memo?.getType(
+    YTNodes.Grid,
+    YTNodes.MusicShelf,
+    YTNodes.MusicCarouselShelf,
+  ) ?? [];
+  return shelves.map(normalizeSection).filter((section) => section.items.length > 0);
+};
+
+const normalizeCookie = (cookie = '') =>
+  String(cookie)
+    .split(/\n|;/g)
+    .map((part) => part.trim())
+    .filter(Boolean)
+    .join('; ');

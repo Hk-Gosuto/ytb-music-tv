@@ -1,0 +1,13 @@
+{
+  "images" : [
+    {
+      "filename" : "app-icon-small-backdrop.png",
+      "idiom" : "tv",
+      "scale" : "1x"
+    }
+  ],
+  "info" : {
+    "author" : "com.ytb.music.tv",
+    "version" : 1
+  }
+}

@@ -1,0 +1,14 @@
+.DS_Store
+data/
+server/data/
+server/node_modules/
+client-tvos/build/
+
+# Local environment and credentials
+.env
+.env.*
+!.env.example
+*.mobileprovision
+*.p12
+*.pem
+*.key

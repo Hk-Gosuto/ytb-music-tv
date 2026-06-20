@@ -1,0 +1,15 @@
+services:
+  ytb-music-tv-server:
+    build:
+      context: ./server
+    ports:
+      - "4174:4174"
+      - "4175:4175/udp"
+    environment:
+      YTB_MUSIC_TV_HOST: "0.0.0.0"
+      YTB_MUSIC_TV_PORT: "4174"
+      YTB_MUSIC_TV_DISCOVERY_PORT: "4175"
+      YTB_MUSIC_TV_DATA_DIR: "/data"
+    volumes:
+      - ./data:/data
+    restart: unless-stopped

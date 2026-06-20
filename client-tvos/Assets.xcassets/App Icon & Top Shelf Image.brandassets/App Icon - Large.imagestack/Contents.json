@@ -1,0 +1,20 @@
+{
+  "layers" : [
+    {
+      "filename" : "Foreground.imagestacklayer"
+    },
+    {
+      "filename" : "Backdrop.imagestacklayer"
+    }
+  ],
+  "info" : {
+    "author" : "com.ytb.music.tv",
+    "version" : 1
+  },
+  "properties" : {
+    "canvasSize" : {
+      "height" : 768,
+      "width" : 1280
+    }
+  }
+}
