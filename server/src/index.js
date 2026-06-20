@@ -1,5 +1,6 @@
 import { createServer } from 'node:http';
 import { hostname } from 'node:os';
+import { join } from 'node:path';
 
 import { loadConfig } from './lib/config.js';
 import { startDiscoveryServer } from './lib/discovery.js';
@@ -43,4 +44,12 @@ const server = createServer((req, res) => {
 server.listen(port, host, () => {
   console.log(`YTB Music TV server listening on http://${host}:${port}`);
   console.log(`YTB Music TV device code: ${config.security.deviceCode}`);
+
+  if (youtubeService.authStatus().status !== 'configured') {
+    console.warn([
+      'YouTube Music Cookie is not configured; personal Library content is unavailable.',
+      `Add the browser Cookie to ${join(dataDir, 'session.json')} and restart the server.`,
+      'Public search, recommendations, and playback remain available without a Cookie.',
+    ].join('\n'));
+  }
 });

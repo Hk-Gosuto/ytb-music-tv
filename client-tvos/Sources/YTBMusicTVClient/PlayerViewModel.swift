@@ -40,6 +40,7 @@ final class PlayerViewModel: ObservableObject {
     @Published var isLoadingHome = false
     @Published var isSearching = false
     @Published var isPreparingPlayback = false
+    @Published private(set) var pendingMedia: MediaItem?
     @Published var playbackTimeMs = 0
     @Published var playbackDurationMs = 0
     @Published var currentStreamHasVideo = false
@@ -410,6 +411,13 @@ final class PlayerViewModel: ObservableObject {
         errorMessage = nil
     }
 
+    func cancelPendingPlayback() {
+        guard pendingMedia != nil else { return }
+        playbackRequestID = UUID()
+        pendingMedia = nil
+        isPreparingPlayback = false
+    }
+
     @discardableResult
     func navigateBackHome() -> Bool {
         guard let previous = homeNavigationHistory.popLast() else { return false }
@@ -475,7 +483,9 @@ final class PlayerViewModel: ObservableObject {
         let requestID = UUID()
         playbackRequestID = requestID
         invalidateNextPlaybackCache()
+        pendingMedia = media
         isPreparingPlayback = true
+        errorMessage = nil
         fallbackPlaybackURLs.removeAll()
         audioFallbackAttempted = false
 
@@ -516,6 +526,7 @@ final class PlayerViewModel: ObservableObject {
                 shuffle: oldState?.shuffle ?? false,
                 repeatMode: oldState?.repeatMode ?? "off"
             )
+            pendingMedia = nil
 
             configurePlayer(
                 url: resolved.url,
@@ -528,6 +539,7 @@ final class PlayerViewModel: ObservableObject {
             return true
         } catch {
             guard playbackRequestID == requestID else { return false }
+            pendingMedia = nil
             isPreparingPlayback = false
             errorMessage = error.localizedDescription
             return false

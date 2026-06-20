@@ -82,17 +82,19 @@ struct ContentView: View {
                                 l10n: l10n,
                                 restoreRequestID: homeFocusRequestID
                             ) { media, queue in
-                                if await viewModel.selectHome(media, queue: queue) {
+                                if media.isPlayable {
                                     await MainActor.run { openPlayer() }
                                 }
+                                _ = await viewModel.selectHome(media, queue: queue)
                             } returnToMenu: {
                                 menuFocusRequestID &+= 1
                             }
                         case .search:
                             SearchView(viewModel: viewModel, l10n: l10n) { media, queue in
-                                if await viewModel.selectSearch(media, queue: queue) {
+                                if media.isPlayable {
                                     await MainActor.run { openPlayer() }
                                 }
+                                _ = await viewModel.selectSearch(media, queue: queue)
                             } returnToMenu: {
                                 menuFocusRequestID &+= 1
                             }
@@ -160,6 +162,7 @@ struct ContentView: View {
     }
 
     private func returnHomeFromPlayer() {
+        viewModel.cancelPendingPlayback()
         viewModel.resetHomeNavigation()
         withAnimation(.easeInOut(duration: 0.22)) {
             showingPlayer = false
@@ -894,12 +897,17 @@ private struct PlayerScreen: View {
     var body: some View {
         GeometryReader { proxy in
             ZStack {
-                ArtworkBackdrop(media: viewModel.state?.currentMedia, strong: true)
+                ArtworkBackdrop(media: displayedMedia, strong: true)
                     .frame(width: proxy.size.width, height: proxy.size.height)
                     .clipped()
                     .zIndex(0)
 
-                if viewModel.currentStreamHasVideo {
+                if let pendingMedia = viewModel.pendingMedia {
+                    PlayerArtworkSurface(media: pendingMedia)
+                        .frame(width: proxy.size.width, height: proxy.size.height)
+                        .zIndex(1)
+                        .transition(.opacity)
+                } else if viewModel.currentStreamHasVideo {
                     PlayerVideoSurface(
                         player: viewModel.player,
                         isPresentationActive: scenePhase == .active
@@ -925,7 +933,7 @@ private struct PlayerScreen: View {
                     .transition(.opacity)
                 }
 
-                if let media = viewModel.state?.currentMedia {
+                if viewModel.pendingMedia == nil, let media = viewModel.state?.currentMedia {
                     PlayerControlsOverlay(
                         screenSize: proxy.size,
                         media: media,
@@ -938,7 +946,7 @@ private struct PlayerScreen: View {
                     )
                     .zIndex(3)
                     .transition(.opacity)
-                } else if viewModel.state?.currentMedia == nil {
+                } else if displayedMedia == nil {
                     ContentUnavailableView(l10n.text("player.noMedia"), systemImage: "music.note")
                         .padding(.bottom, 80)
                         .zIndex(3)
@@ -1032,6 +1040,10 @@ private struct PlayerScreen: View {
     private func togglePanel(_ nextPanel: PlayerPanel) {
         panel = panel == nextPanel ? nil : nextPanel
         registerActivity()
+    }
+
+    private var displayedMedia: MediaItem? {
+        viewModel.pendingMedia ?? viewModel.state?.currentMedia
     }
 
     private func registerActivity() {
@@ -1234,8 +1246,12 @@ private struct PlayerControls: View {
 
     var body: some View {
         HStack(spacing: 22) {
-            ControlButton(icon: "backward.fill", label: l10n.text("player.previous")) {
+            ControlButton(icon: "backward.end.fill", label: l10n.text("player.previous")) {
                 Task { await viewModel.previous() }
+            }
+
+            ControlButton(icon: "forward.end.fill", label: l10n.text("player.next")) {
+                Task { await viewModel.next() }
             }
 
             ControlButton(
@@ -1246,33 +1262,12 @@ private struct PlayerControls: View {
                 Task { await viewModel.toggleShuffle() }
             }
 
-            ControlButton(icon: "forward.fill", label: l10n.text("player.next")) {
-                Task { await viewModel.next() }
-            }
-
             ControlButton(
                 icon: viewModel.state?.repeatMode == "one" ? "repeat.1.circle.fill" : "repeat.1",
                 label: l10n.text("player.repeatOne"),
                 active: viewModel.state?.repeatMode == "one"
             ) {
                 Task { await viewModel.toggleRepeatOne() }
-            }
-
-            ControlButton(
-                icon: "hand.thumbsup.fill",
-                label: l10n.text("player.like"),
-                active: viewModel.state?.currentMedia?.likeStatus == "LIKE"
-            ) {
-                Task { await viewModel.likeCurrent() }
-            }
-
-            ControlButton(
-                icon: "hand.thumbsdown.fill",
-                label: l10n.text("player.dislike"),
-                active: viewModel.state?.currentMedia?.likeStatus == "DISLIKE",
-                activeColor: .red
-            ) {
-                Task { await viewModel.dislikeCurrent() }
             }
         }
         .focusSection()
