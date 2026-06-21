@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 
 import {
+  libraryFromParsedResponse,
   YouTubeMusicService,
 } from '../src/services/youtube-service.js';
 
@@ -29,4 +30,18 @@ const sessionStore = () => ({
   get: () => ({ poToken: '', visitorData: '', updatedAt: null }),
   patch: async () => {},
   clear: async () => {},
+});
+
+test('normalizes an empty ItemSection library response', () => {
+  const parsed = {
+    contents_memo: {
+      getType: () => [],
+    },
+  };
+
+  assert.deepEqual(libraryFromParsedResponse(parsed), {
+    filters: [],
+    sortOptions: [],
+    sections: [],
+  });
 });

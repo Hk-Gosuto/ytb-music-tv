@@ -555,3 +555,19 @@ const sectionsFromParsedResponse = (parsed) => {
   ) ?? [];
   return shelves.map(normalizeSection).filter((section) => section.items.length > 0);
 };
+
+export const libraryFromParsedResponse = (parsed) => {
+  const memo = parsed.contents_memo;
+  const chipCloud = memo?.getType(YTNodes.ChipCloud)?.[0];
+  const sortButton = memo?.getType(YTNodes.MusicSortFilterButton)?.[0];
+
+  return {
+    filters: Array.from(chipCloud?.chips ?? [])
+      .map((chip) => chip?.text?.toString?.() ?? String(chip?.text ?? ''))
+      .filter(Boolean),
+    sortOptions: Array.from(sortButton?.menu?.options ?? [])
+      .map((option) => option?.title?.toString?.() ?? String(option?.title ?? ''))
+      .filter(Boolean),
+    sections: sectionsFromParsedResponse(parsed),
+  };
+};
