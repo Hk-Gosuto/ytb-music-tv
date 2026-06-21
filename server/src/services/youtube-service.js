@@ -115,12 +115,12 @@ export class YouTubeMusicService {
       );
     }
     try {
-      const library = await client.music.getLibrary();
-      return {
-        filters: library.filters ?? [],
-        sortOptions: library.sort_options ?? [],
-        sections: Array.from(library.contents ?? []).map(normalizeSection),
-      };
+      const response = await client.actions.execute('/browse', {
+        browseId: 'FEmusic_library_landing',
+        client: 'YTMUSIC',
+        skip_auth_check: true,
+      });
+      return libraryFromParsedResponse(Parser.parseResponse(response.data));
     } catch (error) {
       if (isAuthRequiredError(error)) {
         return authRequiredSections(
@@ -556,6 +556,22 @@ const sectionsFromParsedResponse = (parsed) => {
     YTNodes.MusicCarouselShelf,
   ) ?? [];
   return shelves.map(normalizeSection).filter((section) => section.items.length > 0);
+};
+
+export const libraryFromParsedResponse = (parsed) => {
+  const memo = parsed.contents_memo;
+  const chipCloud = memo?.getType(YTNodes.ChipCloud)?.[0];
+  const sortButton = memo?.getType(YTNodes.MusicSortFilterButton)?.[0];
+
+  return {
+    filters: Array.from(chipCloud?.chips ?? [])
+      .map((chip) => chip?.text?.toString?.() ?? String(chip?.text ?? ''))
+      .filter(Boolean),
+    sortOptions: Array.from(sortButton?.menu?.options ?? [])
+      .map((option) => option?.title?.toString?.() ?? String(option?.title ?? ''))
+      .filter(Boolean),
+    sections: sectionsFromParsedResponse(parsed),
+  };
 };
 
 const normalizeCookie = (cookie = '') =>
