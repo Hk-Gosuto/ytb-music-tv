@@ -4,6 +4,7 @@ import { join } from 'node:path';
 
 import { loadConfig } from './lib/config.js';
 import { startDiscoveryServer } from './lib/discovery.js';
+import { startOAuthLoginFlow } from './lib/oauth-login-flow.js';
 import { loadOAuthStore } from './lib/oauth-store.js';
 import { createApiRouter } from './lib/router.js';
 import { loadSessionStore } from './lib/session-store.js';
@@ -62,12 +63,18 @@ server.listen(port, host, () => {
   console.log(`YTB Music TV device code: ${config.security.deviceCode}`);
 
   const authStatus = youtubeService.authStatus();
-  if (authStatus.status !== 'configured') {
+  if (!authStatus.hasOAuthToken) {
     console.warn([
-      'Google OAuth is not configured; personal Library content is unavailable.',
-      'Run `pnpm oauth:login` or execute `node src/cli/oauth-login.js` in the container.',
+      'Google OAuth is not configured; starting device login for personal Library access.',
       `OAuth credentials are stored in ${join(dataDir, 'oauth.json')}.`,
       'Public search, recommendations, and playback remain available without a Cookie.',
+    ].join('\n'));
+    startOAuthLoginFlow({ oauth, dataDir });
+  } else if (authStatus.status !== 'configured') {
+    console.warn([
+      `Google OAuth status is ${authStatus.status}; personal Library content may be unavailable.`,
+      'Run `pnpm oauth:login` or execute `node src/cli/oauth-login.js` in the container to replace the current token.',
+      `OAuth credentials are stored in ${join(dataDir, 'oauth.json')}.`,
     ].join('\n'));
   }
 });

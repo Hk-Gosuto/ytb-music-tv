@@ -122,21 +122,21 @@ YTB Music TV device code: 123456
 
 个人歌曲、播放列表、专辑、艺人和再次收听内容通过带 OAuth Bearer token 的 YouTube TV Music surfaces 获取。服务端会动态发现 YouTube TV 使用的 OAuth Client，不要求用户创建 Google Cloud 项目或 Client ID，也不依赖该共享 Client 无法启用的 YouTube Data API。该兼容模式会申请 `youtube` scope；环境变量 `YTB_MUSIC_TV_OAUTH_CLIENT_ID` 和 `YTB_MUSIC_TV_OAUTH_CLIENT_SECRET` 仅用于需要固定自有 Client 时覆盖自动发现结果，并默认申请只读 scope。
 
-直接在服务端目录执行设备登录：
+服务端启动后如果还没有 OAuth token，会自动输出 Google 验证地址和设备码，并在后台等待授权完成。要替换当前 OAuth token，也可以在服务端目录重新执行设备登录命令：
 
 ```bash
 cd server
 node src/cli/oauth-login.js
 ```
 
-也可以在运行中的 Docker Compose 服务里执行：
+Docker Compose 运行时，首次启动同样会在服务日志中显示验证地址；要主动替换 token，也可以在运行中的容器里执行：
 
 ```bash
 ./scripts/docker-compose.sh exec ytb-music-tv-server \
   node src/cli/oauth-login.js
 ```
 
-命令会显示 Google 验证地址和设备码。授权成功后，refresh token 会以 `0600` 权限保存到服务端数据目录的 `oauth.json`；运行中的服务会自动重新加载文件，不需要重启。
+授权成功后，refresh token 会以 `0600` 权限保存到服务端数据目录的 `oauth.json`；运行中的服务会自动重新加载文件，不需要重启。
 
 如果通过环境变量覆盖为自有 OAuth Client，且项目仍处于 Google Cloud 的 Testing 状态，refresh token 可能在七天后过期。
 

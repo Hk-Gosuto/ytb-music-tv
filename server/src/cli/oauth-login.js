@@ -1,7 +1,6 @@
 #!/usr/bin/env node
 
-import { join } from 'node:path';
-
+import { runOAuthLoginFlow } from '../lib/oauth-login-flow.js';
 import { loadOAuthStore } from '../lib/oauth-store.js';
 import {
   GoogleOAuthClient,
@@ -16,15 +15,7 @@ const oauth = new GoogleOAuthClient({
 });
 
 try {
-  await oauth.login({
-    onCode: ({ userCode, verificationUrl, verificationUrlComplete }) => {
-      console.log('Open this URL in a browser and authorize YTB Music TV:');
-      console.log(verificationUrlComplete ?? verificationUrl);
-      console.log(`Device code: ${userCode}`);
-      console.log('Waiting for authorization...');
-    },
-  });
-  console.log(`Google OAuth login completed. Credentials saved to ${join(dataDir, 'oauth.json')}`);
+  await runOAuthLoginFlow({ oauth, dataDir });
 } catch (error) {
   console.error(`Google OAuth login failed: ${error?.message ?? error}`);
   process.exitCode = 1;

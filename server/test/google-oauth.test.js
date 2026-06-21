@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
 
+import { runOAuthLoginFlow } from '../src/lib/oauth-login-flow.js';
 import { loadOAuthStore } from '../src/lib/oauth-store.js';
 import { GoogleOAuthClient } from '../src/services/google-oauth.js';
 
@@ -161,6 +162,32 @@ test('running services reload credentials written by the login command', async (
     serverStore.close();
     await rm(dataDir, { recursive: true, force: true });
   }
+});
+
+test('shared OAuth login flow prints the Google URL and saved credential path', async () => {
+  const lines = [];
+  const oauth = {
+    login: async ({ onCode }) => {
+      await onCode({
+        userCode: 'ABCD-EFGH',
+        verificationUrl: 'https://www.google.com/device',
+        verificationUrlComplete: 'https://www.google.com/device?user_code=ABCD-EFGH',
+      });
+    },
+  };
+
+  await runOAuthLoginFlow({
+    oauth,
+    dataDir: '/tmp/ytb-music-tv-test',
+    logger: { log: (message) => lines.push(message) },
+  });
+
+  assert.match(lines[0], /https:\/\/www\.google\.com\/device\?user_code=ABCD-EFGH/);
+  assert.match(lines[0], /Device code: ABCD-EFGH/);
+  assert.equal(
+    lines[1],
+    'Google OAuth login completed. Credentials saved to /tmp/ytb-music-tv-test/oauth.json',
+  );
 });
 
 const memoryStore = (initial = {}) => {
