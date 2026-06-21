@@ -3,7 +3,6 @@ import { join } from 'node:path';
 import { createJsonStore } from './json-store.js';
 
 const defaults = {
-  cookie: '',
   poToken: '',
   visitorData: '',
   updatedAt: null,
