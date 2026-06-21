@@ -66,6 +66,7 @@ ytb-music-tv/
 ```
 
 该包装命令会把宿主机 UID/GID 传给容器，确保 `data/` 中生成的文件属于当前用户。
+直接使用 `docker compose up` 也可以，容器入口脚本会先修复 `/data` 挂载目录权限，再降权运行服务。
 
 服务启动后可检查：
 
@@ -155,10 +156,10 @@ node src/cli/oauth-login.js
 | `YTB_MUSIC_TV_OAUTH_CLIENT_ID` | 自动发现 | 可选的 OAuth Client ID 覆盖 |
 | `YTB_MUSIC_TV_OAUTH_CLIENT_SECRET` | 自动发现 | 可选的 OAuth Client Secret 覆盖 |
 | `YTB_MUSIC_TV_LIBRARY_MAX_ITEMS` | `200` | 每类官方 Library 内容的最大条数 |
-| `YTB_MUSIC_TV_UID` | `1000` | Docker 容器运行 UID；辅助脚本自动使用当前用户 |
-| `YTB_MUSIC_TV_GID` | `1000` | Docker 容器运行 GID；辅助脚本自动使用当前用户 |
+| `YTB_MUSIC_TV_UID` | `1000` | Docker 容器内服务进程运行 UID；辅助脚本自动使用当前用户 |
+| `YTB_MUSIC_TV_GID` | `1000` | Docker 容器内服务进程运行 GID；辅助脚本自动使用当前用户 |
 
-Docker Compose 将 TCP `4174` 和 UDP `4175` 暴露到宿主机，并把根目录的 `data/` 挂载到容器 `/data`。建议始终通过 `scripts/docker-compose.sh` 执行 Compose，或在 `.env` 中手动设置 UID/GID。
+Docker Compose 将 TCP `4174` 和 UDP `4175` 暴露到宿主机，并把根目录的 `data/` 挂载到容器 `/data`。启动时会自动创建并修复 `/data` 权限，然后按 `YTB_MUSIC_TV_UID`/`YTB_MUSIC_TV_GID` 降权运行服务。建议通过 `scripts/docker-compose.sh` 执行 Compose，或在 `.env` 中手动设置 UID/GID，让 `data/` 中生成的文件归属宿主机当前用户。
 
 客户端可通过进程环境变量 `YTB_MUSIC_TV_SERVER_URL` 注入首次连接地址；之后也可在设置页修改。播放偏好、广告过滤和跳过不喜欢歌曲等配置会通过服务端 API 立即保存。
 

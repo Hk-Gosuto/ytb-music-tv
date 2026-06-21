@@ -2,11 +2,12 @@ services:
   ytb-music-tv-server:
     build:
       context: ./server
-    user: "${YTB_MUSIC_TV_UID:-1000}:${YTB_MUSIC_TV_GID:-1000}"
     ports:
       - "4174:4174"
       - "4175:4175/udp"
     environment:
+      YTB_MUSIC_TV_UID: "${YTB_MUSIC_TV_UID:-1000}"
+      YTB_MUSIC_TV_GID: "${YTB_MUSIC_TV_GID:-1000}"
       YTB_MUSIC_TV_HOST: "0.0.0.0"
       YTB_MUSIC_TV_PORT: "4174"
       YTB_MUSIC_TV_DISCOVERY_PORT: "4175"
