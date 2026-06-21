@@ -1,7 +1,8 @@
-import { mkdir, readFile, writeFile } from 'node:fs/promises';
+import { chmod, mkdir, readFile, writeFile } from 'node:fs/promises';
 import { dirname } from 'node:path';
 
-export const createJsonStore = async (path, defaults) => {
+export const createJsonStore = async (path, defaults, options = {}) => {
+  const mode = options.mode;
   await mkdir(dirname(path), { recursive: true });
 
   let current = structuredClone(defaults);
@@ -14,15 +15,24 @@ export const createJsonStore = async (path, defaults) => {
     if (error?.code !== 'ENOENT') {
       throw error;
     }
-    await writeFile(path, `${JSON.stringify(current, null, 2)}\n`);
+    await writeJson(path, current, mode);
   }
 
   const save = async () => {
-    await writeFile(path, `${JSON.stringify(current, null, 2)}\n`);
+    await writeJson(path, current, mode);
+  };
+
+  const reload = async () => {
+    current = {
+      ...structuredClone(defaults),
+      ...JSON.parse(await readFile(path, 'utf8')),
+    };
+    return structuredClone(current);
   };
 
   return {
     get: () => structuredClone(current),
+    reload,
     set: async (next) => {
       current = structuredClone(next);
       await save();
@@ -42,4 +52,11 @@ export const createJsonStore = async (path, defaults) => {
       return structuredClone(current);
     },
   };
+};
+
+const writeJson = async (path, value, mode) => {
+  await writeFile(path, `${JSON.stringify(value, null, 2)}\n`, mode == null ? undefined : { mode });
+  if (mode != null) {
+    await chmod(path, mode);
+  }
 };

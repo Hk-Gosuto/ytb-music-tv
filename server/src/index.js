@@ -4,9 +4,12 @@ import { join } from 'node:path';
 
 import { loadConfig } from './lib/config.js';
 import { startDiscoveryServer } from './lib/discovery.js';
+import { loadOAuthStore } from './lib/oauth-store.js';
 import { createApiRouter } from './lib/router.js';
 import { loadSessionStore } from './lib/session-store.js';
+import { GoogleOAuthClient, oauthConfigFromEnv } from './services/google-oauth.js';
 import { YouTubeMusicService } from './services/youtube-service.js';
+import { YouTubeTvService } from './services/youtube-tv-service.js';
 
 const host = process.env.YTB_MUSIC_TV_HOST ?? '127.0.0.1';
 const port = Number.parseInt(process.env.YTB_MUSIC_TV_PORT ?? '4174', 10);
@@ -16,7 +19,20 @@ const serverName = process.env.YTB_MUSIC_TV_SERVER_NAME ?? hostname();
 
 const configStore = await loadConfig(dataDir);
 const sessionStore = await loadSessionStore(dataDir);
-const youtubeService = new YouTubeMusicService({ configStore, sessionStore });
+const oauthStore = await loadOAuthStore(dataDir, { watch: true });
+const oauth = new GoogleOAuthClient({
+  store: oauthStore,
+  ...oauthConfigFromEnv(),
+});
+const youtubeTvService = new YouTubeTvService({
+  oauth,
+  maxItems: Number.parseInt(process.env.YTB_MUSIC_TV_LIBRARY_MAX_ITEMS ?? '200', 10),
+});
+const youtubeService = new YouTubeMusicService({
+  configStore,
+  sessionStore,
+  oauthLibraryService: youtubeTvService,
+});
 const router = createApiRouter({
   configStore,
   youtubeService,
@@ -45,10 +61,12 @@ server.listen(port, host, () => {
   console.log(`YTB Music TV server listening on http://${host}:${port}`);
   console.log(`YTB Music TV device code: ${config.security.deviceCode}`);
 
-  if (youtubeService.authStatus().status !== 'configured') {
+  const authStatus = youtubeService.authStatus();
+  if (authStatus.status !== 'configured') {
     console.warn([
-      'YouTube Music Cookie is not configured; personal Library content is unavailable.',
-      `Add the browser Cookie to ${join(dataDir, 'session.json')} and restart the server.`,
+      'Google OAuth is not configured; personal Library content is unavailable.',
+      'Run `pnpm oauth:login` or execute `node src/cli/oauth-login.js` in the container.',
+      `OAuth credentials are stored in ${join(dataDir, 'oauth.json')}.`,
       'Public search, recommendations, and playback remain available without a Cookie.',
     ].join('\n'));
   }

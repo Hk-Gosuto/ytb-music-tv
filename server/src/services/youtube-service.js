@@ -19,56 +19,32 @@ Platform.shim.eval = (data, env) => {
 export class YouTubeMusicService {
   #configStore;
   #sessionStore;
+  #oauthLibraryService;
   #clientPromise;
   #playbackClientPromise;
   #streamCache = new Map();
   #streamInflight = new Map();
 
-  constructor({ configStore, sessionStore }) {
+  constructor({ configStore, sessionStore, oauthLibraryService = null }) {
     this.#configStore = configStore;
     this.#sessionStore = sessionStore;
+    this.#oauthLibraryService = oauthLibraryService;
   }
 
   authStatus() {
     const session = this.#sessionStore.get();
+    const oauth = this.#oauthLibraryService?.authStatus() ?? { status: 'not_configured' };
     return {
-      mode: 'external-browser-cookie',
-      status: session.cookie ? 'configured' : 'not_configured',
-      hasCookie: Boolean(session.cookie),
-      hasOAuthToken: false,
+      mode: 'google-device-oauth',
+      status: oauth.status,
+      hasCookie: false,
+      hasOAuthToken: Boolean(oauth.hasRefreshToken),
       hasPoToken: Boolean(session.poToken),
       hasVisitorData: Boolean(session.visitorData),
-      musicLibraryStatus: session.cookie ? 'configured' : 'cookie_required',
-      error: null,
-      updatedAt: session.updatedAt,
+      musicLibraryStatus: oauth.status,
+      error: oauth.error ?? null,
+      updatedAt: oauth.updatedAt ?? null,
     };
-  }
-
-  async setCredentials({ cookie, poToken, visitorData }) {
-    const next = await this.#sessionStore.patch({
-      cookie: normalizeCookie(cookie),
-      poToken: poToken ?? '',
-      visitorData: visitorData ?? '',
-      updatedAt: new Date().toISOString(),
-    });
-    this.#clientPromise = null;
-    this.#playbackClientPromise = null;
-    this.#streamCache.clear();
-    this.#streamInflight.clear();
-    return {
-      hasCookie: Boolean(next.cookie),
-      hasPoToken: Boolean(next.poToken),
-      hasVisitorData: Boolean(next.visitorData),
-      updatedAt: next.updatedAt,
-    };
-  }
-
-  async clearCredentials() {
-    await this.#sessionStore.clear();
-    this.#clientPromise = null;
-    this.#playbackClientPromise = null;
-    this.#streamCache.clear();
-    this.#streamInflight.clear();
   }
 
   async search(query, filters = {}) {
@@ -107,29 +83,28 @@ export class YouTubeMusicService {
   }
 
   async library() {
-    const client = await this.#client();
-    if (!this.#sessionStore.get().cookie) {
-      return authRequiredSections(
-        'cookie_required',
-        'YouTube Music Library requires browser cookie login. Device-code OAuth is not accepted by this Library endpoint.',
-      );
-    }
-    try {
-      const library = await client.music.getLibrary();
-      return {
-        filters: library.filters ?? [],
-        sortOptions: library.sort_options ?? [],
-        sections: Array.from(library.contents ?? []).map(normalizeSection),
-      };
-    } catch (error) {
-      if (isAuthRequiredError(error)) {
-        return authRequiredSections(
-          'cookie_required',
-          'YouTube Music Library requires browser cookie login.',
-        );
+    const oauth = this.#oauthLibraryService?.authStatus() ?? { status: 'not_configured' };
+
+    if (oauth.status === 'configured') {
+      try {
+        return await this.#oauthLibraryService.library();
+      } catch (error) {
+        if (error.code === 'oauth_reauthorization_required') {
+          return authRequiredSections(
+            'oauth_reauthorization_required',
+            'Google OAuth authorization expired. Run the OAuth login command again.',
+          );
+        }
+        throw error;
       }
-      throw error;
     }
+
+    return authRequiredSections(
+      oauth.status === 'misconfigured' ? 'oauth_misconfigured' : 'oauth_required',
+      oauth.status === 'misconfigured'
+        ? 'Google OAuth client credentials and saved authorization must both be configured.'
+        : 'Run the Google OAuth login command to access your Library.',
+    );
   }
 
   async browse(media) {
@@ -156,6 +131,14 @@ export class YouTubeMusicService {
     }
 
     if (isPlaylistId(id)) {
+      if (this.#oauthLibraryService?.authStatus().status === 'configured') {
+        const playlist = await this.#oauthLibraryService.playlist(id);
+        return {
+          id: playlist.id,
+          title: playlist.title,
+          sections: [{ id: 'tracks', title: 'Tracks', items: playlist.items }],
+        };
+      }
       const playlist = await client.music.getPlaylist(id);
       return {
         id,
@@ -190,6 +173,9 @@ export class YouTubeMusicService {
   }
 
   async playlist(playlistId) {
+    if (this.#oauthLibraryService?.authStatus().status === 'configured') {
+      return await this.#oauthLibraryService.playlist(playlistId);
+    }
     const client = await this.#client();
     const playlist = await client.music.getPlaylist(playlistId);
     return {
@@ -309,6 +295,19 @@ export class YouTubeMusicService {
 
   async #playbackInfo(videoId) {
     const playbackClient = await this.#playbackClient();
+    if (this.#oauthLibraryService?.authStatus().status === 'configured') {
+      try {
+        await this.#oauthLibraryService.authorizeSession(playbackClient);
+        const info = await playbackClient.getBasicInfo(videoId, { client: 'TV' });
+        if (isPlayable(info)) {
+          return info;
+        }
+        console.warn(`OAuth TV player returned ${info?.playability_status?.status ?? 'unknown'} for ${videoId}`);
+      } catch (error) {
+        console.warn(`OAuth TV player failed for ${videoId}: ${error?.message ?? error}`);
+      }
+    }
+
     let fallbackInfo = null;
     let fallbackError = null;
     try {
@@ -386,7 +385,7 @@ export class YouTubeMusicService {
     if (!this.#playbackClientPromise) {
       this.#playbackClientPromise = this.#createClient({
         retrievePlayer: true,
-        clientName: 'YTMUSIC',
+        clientName: 'TVHTML5',
       });
     }
     return await this.#playbackClientPromise;
@@ -417,7 +416,6 @@ export class YouTubeMusicService {
 
     const client = await Innertube.create({
       cache: new UniversalCache(false),
-      cookie: session.cookie || undefined,
       po_token: session.poToken || config.youtube.poToken || undefined,
       visitor_data: session.visitorData || config.youtube.visitorData || undefined,
       account_index: config.youtube.accountIndex ?? 0,
@@ -447,8 +445,8 @@ export class YouTubeMusicService {
     } catch (error) {
       if (isAuthRequiredError(error)) {
         return authRequiredSections(
-          'cookie_required',
-          'This library section requires browser cookie login.',
+          'oauth_required',
+          'This library section requires Google OAuth login.',
         );
       }
       throw error;
@@ -557,10 +555,3 @@ const sectionsFromParsedResponse = (parsed) => {
   ) ?? [];
   return shelves.map(normalizeSection).filter((section) => section.items.length > 0);
 };
-
-const normalizeCookie = (cookie = '') =>
-  String(cookie)
-    .split(/\n|;/g)
-    .map((part) => part.trim())
-    .filter(Boolean)
-    .join('; ');
